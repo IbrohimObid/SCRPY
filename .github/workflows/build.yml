@@ -34,11 +34,13 @@ jobs:
       - name: Tayyor fayllarni saqlash (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: ScrcpyConnect-Setup
-          path: installer_output\ScrcpyConnect-Setup.exe
+          name: AjibEkranUlagich-Setup
+          path: installer_output/*.exe
+          if-no-files-found: error
 
       - name: Standalone .exe faylni ham saqlash
         uses: actions/upload-artifact@v4
         with:
-          name: ScrcpyConnect-exe-only
-          path: dist\ScrcpyConnect.exe
+          name: AjibEkranUlagich-exe-only
+          path: dist/ScrcpyConnect.exe
+          if-no-files-found: error
