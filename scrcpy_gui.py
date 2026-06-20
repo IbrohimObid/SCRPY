@@ -153,8 +153,8 @@ class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Ajib Ekran Ulagich - Android va iPhone/iPad")
-        self.geometry("600x760")
-        self.minsize(600, 760)
+        self.geometry("600x820")
+        self.minsize(600, 820)
         self.configure(bg=BG_COLOR)
         self.resizable(False, False)
 
@@ -568,6 +568,11 @@ class IOSTab:
         self.is_running = False
         self.airplay_exe = AIRPLAY_EXE  # boshlang'ich qiymat, topilsa yangilanadi
 
+        # Sozlamalar (lagni boshqarish uchun)
+        self.audio_on = tk.BooleanVar(value=False)      # ovoz: boshida o'chiq (lag kam bo'lsin)
+        self.low_lag = tk.BooleanVar(value=True)        # past lag rejimi: boshida yoqilgan
+        self.quality = tk.StringVar(value="720p")       # sifat: 720p / 1080p / original
+
         self._build_ui()
 
         # Ilova ochilganda mavjudligini tekshiramiz, lekin avtomatik yuklamaymiz -
@@ -611,6 +616,43 @@ class IOSTab:
         )
         self.state_label.pack(anchor="w", pady=(6, 0))
 
+        # ---- Sozlamalar kartasi (lagni boshqarish) ----
+        _, settings_card = self._make_card(p, "Sozlamalar (lagni kamaytirish)")
+
+        # Ovoz
+        self._checkbox(
+            settings_card, "🔊  Ovozni yoqish (o'chirilsa lag kamayadi)",
+            self.audio_on
+        )
+        # Past lag rejimi
+        self._checkbox(
+            settings_card, "⚡  Past lag rejimi (tavsiya etiladi)",
+            self.low_lag
+        )
+
+        # Sifat tanlash
+        quality_row = tk.Frame(settings_card, bg=CARD_COLOR)
+        quality_row.pack(fill="x", anchor="w", pady=(8, 0))
+        tk.Label(
+            quality_row, text="📺  Sifat:", bg=CARD_COLOR, fg=TEXT_COLOR,
+            font=(FONT_NAME, 10)
+        ).pack(side="left", padx=(0, 8))
+
+        for label, value in [("720p (tez)", "720p"), ("1080p (aniq)", "1080p"), ("Original", "original")]:
+            rb = tk.Radiobutton(
+                quality_row, text=label, variable=self.quality, value=value,
+                bg=CARD_COLOR, fg=TEXT_COLOR, selectcolor="#33354a",
+                activebackground=CARD_COLOR, activeforeground=TEXT_COLOR,
+                font=(FONT_NAME, 9), relief="flat", highlightthickness=0,
+                bd=0, cursor="hand2"
+            )
+            rb.pack(side="left", padx=(0, 6))
+
+        # Sozlama o'zgarganda avtomatik faylga yozish va (ishlab tursa) restart
+        self.audio_on.trace_add("write", lambda *a: self._on_settings_changed())
+        self.low_lag.trace_add("write", lambda *a: self._on_settings_changed())
+        self.quality.trace_add("write", lambda *a: self._on_settings_changed())
+
         # ---- Asosiy tugma ----
         self.toggle_btn = tk.Button(
             p, text="📡  AIRPLAY QABUL QILISHNI BOSHLASH",
@@ -653,6 +695,66 @@ class IOSTab:
             font=(FONT_NAME, 12, "bold")
         ).pack(anchor="w")
         return card, inner_pad
+
+    def _checkbox(self, parent, text, var):
+        cb = tk.Checkbutton(
+            parent, text=text, variable=var, bg=CARD_COLOR, fg=TEXT_COLOR,
+            selectcolor="#33354a", activebackground=CARD_COLOR, activeforeground=TEXT_COLOR,
+            font=(FONT_NAME, 10), anchor="w", relief="flat",
+            highlightthickness=0, bd=0, cursor="hand2"
+        )
+        cb.pack(fill="x", anchor="w", pady=2)
+        return cb
+
+    def _build_uxplay_args(self):
+        """Tanlangan sozlamalarga qarab UxPlay argumentlari ro'yxatini quradi."""
+        args = []
+        # Ovoz: o'chirilgan bo'lsa -as 0 (audioni butunlay o'chiradi, lagni kamaytiradi)
+        if not self.audio_on.get():
+            args.append("-as 0")
+        # Past lag: video/audio timestamp sinxronizatsiyani o'chiradi
+        if self.low_lag.get():
+            args.append("-vsync no")
+        # Sifat: ekran o'lchamini cheklash (kichikroq = kamroq lag)
+        q = self.quality.get()
+        if q == "720p":
+            args.append("-s 1280x720")
+        elif q == "1080p":
+            args.append("-s 1920x1080")
+        # "original" bo'lsa -s qo'shmaymiz (qurilmaning o'z o'lchamida)
+        return " ".join(args)
+
+    def _arguments_file_path(self):
+        return os.path.join(
+            os.environ.get("APPDATA", APP_DIR), "uxplay-windows", "arguments.txt"
+        )
+
+    def _write_arguments_file(self):
+        """Sozlamalarni uxplay-windows o'qiydigan arguments.txt fayliga yozadi."""
+        try:
+            args_str = self._build_uxplay_args()
+            path = self._arguments_file_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(args_str)
+            return True
+        except Exception:
+            return False
+
+    def _on_settings_changed(self):
+        """Sozlama o'zgarganda - faylga yozamiz va agar ishlab tursa, restart qilamiz."""
+        self._write_arguments_file()
+        if self.is_running:
+            self.set_status("Sozlama o'zgardi, qayta ishga tushirilmoqda...", SUBTEXT_COLOR)
+            threading.Thread(target=self._restart_airplay, daemon=True).start()
+
+    def _restart_airplay(self):
+        """AirPlay'ni yangi sozlamalar bilan qayta ishga tushiradi."""
+        kill_process("uxplay-windows.exe")
+        kill_process("uxplay.exe")
+        import time
+        time.sleep(1.5)
+        self._start_airplay()
 
     def set_status(self, text, color=SUBTEXT_COLOR):
         self.status_text.set(text)
@@ -869,6 +971,9 @@ class IOSTab:
     # ---------- Ishga tushirish / to'xtatish ----------
     def _start_airplay(self):
         try:
+            # Avval sozlamalarni faylga yozamiz (lag sozlamalari shu orqali qo'llanadi)
+            self._write_arguments_file()
+
             self.root.after(0, lambda: self.set_status(
                 "AirPlay ishga tushirilmoqda...", SUBTEXT_COLOR))
             launch_detached([self.airplay_exe], cwd=os.path.dirname(self.airplay_exe))
