@@ -260,6 +260,8 @@ class AndroidTab:
             "always_top": tk.BooleanVar(value=False),
             "show_touches": tk.BooleanVar(value=False),
         }
+        # Ekran aylanishi: "auto" (erkin aylanadi), yoki qulflangan holatlar
+        self.orientation = tk.StringVar(value="auto")
 
         self._needs_download = False
         self._check_scrcpy_exists()
@@ -402,6 +404,32 @@ class AndroidTab:
         self._checkbox(opts, "To'liq ekran rejimida ochish", self.extra_flags["fullscreen"])
         self._checkbox(opts, "Doim ustda turish", self.extra_flags["always_top"])
         self._checkbox(opts, "Ekranda tegishlarni ko'rsatish", self.extra_flags["show_touches"])
+
+        # Ekran aylanishi (orientatsiya) tanlovi
+        orient_row = tk.Frame(card3, bg=CARD_COLOR)
+        orient_row.pack(fill="x", anchor="w", pady=(8, 0))
+        tk.Label(
+            orient_row, text="🔄  Ekran aylanishi:", bg=CARD_COLOR, fg=TEXT_COLOR,
+            font=(FONT_NAME, 10)
+        ).pack(side="left", padx=(0, 8))
+
+        for label, value in [("Avtomatik", "auto"), ("Vertikal", "portrait"), ("Gorizontal", "landscape")]:
+            rb = tk.Radiobutton(
+                orient_row, text=label, variable=self.orientation, value=value,
+                bg=CARD_COLOR, fg=TEXT_COLOR, selectcolor="#33354a",
+                activebackground=CARD_COLOR, activeforeground=TEXT_COLOR,
+                font=(FONT_NAME, 9), relief="flat", highlightthickness=0,
+                bd=0, cursor="hand2"
+            )
+            rb.pack(side="left", padx=(0, 6))
+
+        tk.Label(
+            card3,
+            text="ℹ️  \"Avtomatik\" — planshet aylanganda ekran ham aylanadi. "
+                 "Agar aylanishda kadr buzilsa, \"Vertikal\" yoki \"Gorizontal\" ni tanlab qulflang.",
+            bg=CARD_COLOR, fg=SUBTEXT_COLOR, font=(FONT_NAME, 8),
+            anchor="w", justify="left", wraplength=520
+        ).pack(anchor="w", pady=(6, 0))
 
         self.connect_btn = tk.Button(
             p, text="🚀  ULASH",
@@ -700,6 +728,16 @@ class AndroidTab:
             cmd.append("--always-on-top")
         if self.extra_flags["show_touches"].get():
             cmd.append("--show-touches")
+
+        # Ekran aylanishi (orientatsiya)
+        # "auto" - hech narsa qo'shmaymiz, scrcpy o'zi aylanishni boshqaradi (unlocked).
+        # "portrait"/"landscape" - video orientatsiyani qulflaymiz, shunda aylanганда
+        # kadr buzilmaydi (qulflangan holatda qoladi).
+        orient = self.orientation.get()
+        if orient == "portrait":
+            cmd += ["--lock-video-orientation=0"]
+        elif orient == "landscape":
+            cmd += ["--lock-video-orientation=3"]
 
         try:
             launch_detached(cmd, cwd=SCRCPY_DIR)
