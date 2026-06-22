@@ -845,9 +845,13 @@ class IOSTab:
 
         self._build_ui()
 
-        # Ilova ochilganda mavjudligini tekshiramiz, lekin avtomatik yuklamaymiz -
-        # foydalanuvchi "Boshlash" tugmasini bosganda yuklaymiz (chunki bu katta fayl,
-        # va ba'zi odamlar faqat Android funksiyasi uchun ilovani ishlatishlari mumkin).
+        # Ilova ochilganda allaqachon o'rnatilgan uxplay-windows ni qidiramiz.
+        # Topilsa, qayta o'rnatishning oldini olamiz (har safar o'rnatmaslik uchun).
+        found = self._find_installed_exe()
+        if found:
+            self.airplay_exe = found
+
+        # Ishlab turgan-turmaganini tekshiramiz
         self._refresh_running_state()
 
     def _build_ui(self):
@@ -1097,10 +1101,19 @@ class IOSTab:
             self._stop_airplay()
             return
 
+        # Avval o'rnatilgan dasturni qayta qidiramiz (ilova ochilgandan keyin
+        # o'rnatilgan bo'lishi mumkin). Topilsa, qayta o'rnatmaymiz.
         if not os.path.isfile(self.airplay_exe):
+            found = self._find_installed_exe()
+            if found:
+                self.airplay_exe = found
+
+        if not os.path.isfile(self.airplay_exe):
+            # Haqiqatan o'rnatilmagan - o'rnatamiz
             self.toggle_btn.configure(state="disabled")
             threading.Thread(target=self._install_then_start, daemon=True).start()
         else:
+            # Allaqachon o'rnatilgan - to'g'ridan-to'g'ri ishga tushiramiz
             self.toggle_btn.configure(state="disabled")
             threading.Thread(target=self._start_airplay, daemon=True).start()
 
@@ -1248,22 +1261,31 @@ class IOSTab:
         return None, None
 
     def _find_installed_exe(self):
-        """O'rnatilgandan keyin uxplay-windows.exe odatda qaerga joylashishini tekshiradi
-        (winget, to'g'ridan-to'g'ri installer, yoki portable joylashuvlar)."""
+        """O'rnatilgan uxplay-windows.exe ni topadi. Bir nechta usul bilan qidiradi:
+        ma'lum papkalar, winget papkalari, Windows registry, Start Menu yorliqlari."""
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         program_files = os.environ.get("PROGRAMFILES", "")
         program_files_x86 = os.environ.get("PROGRAMFILES(X86)", "")
+        appdata = os.environ.get("APPDATA", "")
 
+        # 1) Ma'lum to'g'ridan-to'g'ri joylar
         candidates = [
             os.path.join(local_appdata, "Programs", "uxplay-windows", "uxplay-windows.exe"),
             os.path.join(program_files, "uxplay-windows", "uxplay-windows.exe"),
             os.path.join(program_files_x86, "uxplay-windows", "uxplay-windows.exe"),
+            os.path.join(local_appdata, "uxplay-windows", "uxplay-windows.exe"),
+            os.path.join(appdata, "uxplay-windows", "uxplay-windows.exe"),
         ]
         for c in candidates:
             if c and os.path.isfile(c):
                 return c
 
-        # winget paketlari odatda WindowsApps yoki WinGet papkalarida bo'ladi
+        # 2) Windows registry orqali (eng ishonchli - o'rnatuvchi registry'ga yozadi)
+        reg_path = self._find_exe_from_registry()
+        if reg_path and os.path.isfile(reg_path):
+            return reg_path
+
+        # 3) winget paketlari papkasi
         winget_roots = [
             os.path.join(local_appdata, "Microsoft", "WinGet", "Packages"),
         ]
@@ -1274,17 +1296,95 @@ class IOSTab:
                         if f.lower() == "uxplay-windows.exe":
                             return os.path.join(dirpath, f)
 
-        # Topilmasa, Start Menu yorlig'i orqali qidirishga harakat qilamiz
+        # 4) Start Menu yorlig'idan haqiqiy .exe yo'lini ajratib olamiz
         start_menu_dirs = [
-            os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs"),
+            os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs"),
             os.path.join(os.environ.get("PROGRAMDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs"),
         ]
         for start_menu in start_menu_dirs:
             if os.path.isdir(start_menu):
                 for root_dir, _, files in os.walk(start_menu):
                     for f in files:
-                        if f.lower() == "uxplay-windows.lnk":
-                            return os.path.join(root_dir, f)
+                        if f.lower() in ("uxplay-windows.lnk", "uxplay windows.lnk"):
+                            target = self._resolve_shortcut(os.path.join(root_dir, f))
+                            if target and os.path.isfile(target):
+                                return target
+        return None
+
+    def _find_exe_from_registry(self):
+        """Windows registry'dan uxplay-windows o'rnatilgan joyini topadi."""
+        if os.name != "nt":
+            return None
+        try:
+            import winreg
+        except Exception:
+            return None
+
+        # Uninstall registry kalitlarini tekshiramiz (HKLM va HKCU)
+        roots = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        ]
+        for hive, subkey in roots:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    i = 0
+                    while True:
+                        try:
+                            sub = winreg.EnumKey(key, i)
+                            i += 1
+                        except OSError:
+                            break
+                        try:
+                            with winreg.OpenKey(key, sub) as appkey:
+                                name = ""
+                                try:
+                                    name = winreg.QueryValueEx(appkey, "DisplayName")[0]
+                                except Exception:
+                                    pass
+                                if name and "uxplay" in name.lower():
+                                    # InstallLocation yoki DisplayIcon dan yo'lni olamiz
+                                    for value_name in ("InstallLocation", "DisplayIcon"):
+                                        try:
+                                            loc = winreg.QueryValueEx(appkey, value_name)[0]
+                                        except Exception:
+                                            continue
+                                        if not loc:
+                                            continue
+                                        loc = loc.strip('"')
+                                        # DisplayIcon to'g'ridan-to'g'ri .exe bo'lishi mumkin
+                                        if loc.lower().endswith("uxplay-windows.exe") and os.path.isfile(loc):
+                                            return loc
+                                        # InstallLocation papka bo'lsa, ichidan exe topamiz
+                                        cand = os.path.join(loc, "uxplay-windows.exe")
+                                        if os.path.isfile(cand):
+                                            return cand
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        return None
+
+    def _resolve_shortcut(self, lnk_path):
+        """Windows .lnk yorlig'idan haqiqiy maqsad (.exe) yo'lini ajratib oladi."""
+        if os.name != "nt":
+            return None
+        try:
+            import struct
+            # PowerShell orqali yorliq maqsadini olamiz (eng ishonchli)
+            ps_cmd = (
+                "$ws = New-Object -ComObject WScript.Shell; "
+                f"$sc = $ws.CreateShortcut('{lnk_path}'); "
+                "Write-Output $sc.TargetPath"
+            )
+            code, out, err = run_hidden(
+                ["powershell", "-NoProfile", "-Command", ps_cmd], timeout=10)
+            target = out.strip()
+            if target and os.path.isfile(target):
+                return target
+        except Exception:
+            pass
         return None
 
     # ---------- Ishga tushirish / to'xtatish ----------
